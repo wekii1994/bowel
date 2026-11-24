@@ -42,6 +42,7 @@ class AppState extends ChangeNotifier {
   // settings
   String skin = 'paper';
   int setup = 0;
+  double pageScale = 1.0;
 
   // navigation
   int tab = 0;
@@ -156,6 +157,10 @@ class AppState extends ChangeNotifier {
     vpnOnDemand = prefs['vpnOnDemand'] == '1';
     vpnExcluded = prefs['vpnExcluded'] ?? '';
     updateDismissed = prefs['updateDismissed'] ?? '';
+    final ps = double.tryParse(prefs['pageScale'] ?? '');
+    if (ps != null) {
+      pageScale = ps.clamp(0.6, 1.2);
+    }
     appVersion = await Shell.instance.appVersion();
     setup = prefs['setupDone'] == '1' ? 0 : 1;
     notifyListeners();
@@ -1256,6 +1261,12 @@ class AppState extends ChangeNotifier {
   void setTwisted(bool v) {
     Shell.instance.setPref('borders', v ? 'twisted' : 'straight');
     set(() => twisted = v);
+  }
+
+  void setPageScale(double v) {
+    final clamped = (v.clamp(0.6, 1.2) * 100).round() / 100;
+    Shell.instance.setPref('pageScale', clamped.toString());
+    set(() => pageScale = clamped);
   }
 
   /// Whether to draw in dark, given what the system is set to.

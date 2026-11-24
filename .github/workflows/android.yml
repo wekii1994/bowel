@@ -1,0 +1,113 @@
+name: Build Android APK (arm64-v8a)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+    paths-ignore:
+      - '**.md'
+      - 'site/**'
+      - 'docs/**'
+      - 'resources/shots/**'
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: 3.47.9
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    name: Build Android arm64-v8a
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Extract version
+        id: version
+        run: |
+          VERSION="$(jq -r .version mygo.json)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: mobile/bridge/go.mod
+          cache-dependency-path: mobile/bridge/go.sum
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install NDK
+        run: |
+          ndk="$(sed -n 's/^NDK_VERSION=//p' mobile/android/build.sh)"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$ndk" >/dev/null
+
+      - name: Fetch geo data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/fetch-core.sh
+
+      - name: Install gomobile
+        working-directory: mobile/bridge
+        run: |
+          version="$(go list -m -f '{{.Version}}' golang.org/x/mobile)"
+          go install "golang.org/x/mobile/cmd/gomobile@$version" "golang.org/x/mobile/cmd/gobind@$version"
+          gomobile init
+
+      - name: Build mihomo, launcher and bridge (arm64)
+        run: ./mobile/android/build.sh
+
+      - name: Setup signing key if provided
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        working-directory: mobile/flutter/android
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
+          {
+            echo "storeFile=$RUNNER_TEMP/release.keystore"
+            echo "storePassword=$ANDROID_KEYSTORE_PASSWORD"
+            echo "keyAlias=$ANDROID_KEY_ALIAS"
+            echo "keyPassword=$ANDROID_KEY_PASSWORD"
+          } > key.properties
+
+      - name: Build arm64-v8a APK
+        working-directory: mobile/flutter
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          flutter build apk --release --target-platform android-arm64 --build-name="$VERSION" --build-number="$GITHUB_RUN_NUMBER"
+          cp build/app/outputs/flutter-apk/app-release.apk "bowel-$VERSION-android-arm64.apk"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: bowel-android-arm64
+          if-no-files-found: error
+          path: mobile/flutter/bowel-*-android-arm64.apk
+
+      - name: Publish Release (for tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: mobile/flutter/bowel-*-android-arm64.apk
+          name: bowel ${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: false

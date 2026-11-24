@@ -1,5 +1,6 @@
 import 'dart:io' show Platform;
 
+import 'package:flutter/material.dart' show RoundSliderOverlayShape, RoundSliderThumbShape, Slider, SliderTheme, SliderThemeData;
 import 'package:flutter/widgets.dart';
 
 import '../app/i18n.dart';
@@ -137,6 +138,127 @@ class _SettingsHomeState extends State<_SettingsHome> {
 
   Color? _hexOf(String hex) => hex == 'ink' ? null : Color(0xFF000000 | int.parse(hex.substring(1), radix: 16));
 
+  double? _pageScaleDraft;
+
+  Widget _pageScale(BuildContext context, Look l) {
+    final app = widget.app;
+    final scale = _pageScaleDraft ?? app.pageScale;
+    final percent = '${(scale * 100).round()}%';
+    final isDefault = (scale - 1.0).abs() < 0.005;
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 10, bottom: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(tr('页面缩放', 'Page scale'), style: l.text(15, lh: 21)),
+                    Text(
+                      tr('全局等比无损缩放 (60% ~ 120%)', 'Global lossless scaling (60% ~ 120%)'),
+                      style: l.text(12.5, color: l.mute, lh: 17),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              if (!isDefault)
+                Tap(
+                  label: tr('重置', 'Reset'),
+                  onTap: () {
+                    setState(() => _pageScaleDraft = null);
+                    app.setPageScale(1.0);
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    margin: const EdgeInsets.only(right: 6),
+                    decoration: BoxDecoration(
+                      color: l.paper2,
+                      borderRadius: l.br(6),
+                      border: Border.all(color: l.hair),
+                    ),
+                    child: Text(
+                      tr('重置', 'Reset'),
+                      style: l.text(12, color: l.mute, lh: 16),
+                    ),
+                  ),
+                ),
+              Tap(
+                label: tr('输入缩放百分比', 'Input scale percentage'),
+                onTap: () {
+                  inputSheet(
+                    app,
+                    tr('页面缩放', 'Page scale'),
+                    (v) {
+                      final val = int.tryParse(v.trim());
+                      if (val != null) {
+                        setState(() => _pageScaleDraft = null);
+                        app.setPageScale(val / 100.0);
+                      }
+                    },
+                    hint: '60 - 120',
+                    initial: '${(app.pageScale * 100).round()}',
+                    note: tr('请输入 60 到 120 之间的整数百分比', 'Enter an integer percentage between 60 and 120'),
+                    keyboard: TextInputType.number,
+                  );
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: l.paper2,
+                    borderRadius: l.br(8),
+                    border: Border.all(color: l.hair),
+                  ),
+                  child: Text(
+                    percent,
+                    style: l.text(13, weight: 600, color: l.accent, lh: 18),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Text('60%', style: l.text(11.5, color: l.mute, lh: 16)),
+              Expanded(
+                child: SliderTheme(
+                  data: SliderThemeData(
+                    activeTrackColor: l.accent,
+                    inactiveTrackColor: l.hair,
+                    thumbColor: l.accent,
+                    overlayColor: l.accent.withAlpha(30),
+                    trackHeight: 3,
+                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                    overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+                  ),
+                  child: Slider(
+                    value: scale.clamp(0.6, 1.2),
+                    min: 0.6,
+                    max: 1.2,
+                    divisions: 60,
+                    onChanged: (v) => setState(() => _pageScaleDraft = v),
+                    onChangeEnd: (v) {
+                      setState(() => _pageScaleDraft = null);
+                      app.setPageScale(v);
+                    },
+                  ),
+                ),
+              ),
+              Text('120%', style: l.text(11.5, color: l.mute, lh: 16)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _skin(Look l, String id, Look p) {
     final on = widget.app.skin == id;
     return Tap(
@@ -190,6 +312,7 @@ class _SettingsHomeState extends State<_SettingsHome> {
                 _appearance(l),
                 navRow(l, tr('边框', 'Borders'), app.twisted ? tr('弯曲', 'Twisted') : tr('笔直', 'Straight'), onTap: () => pickSheet<bool>(app, tr('边框', 'Borders'), [PickOption(false, tr('笔直', 'Straight')), PickOption(true, tr('弯曲', 'Twisted'))], app.setTwisted, value: app.twisted)),
                 _accents(l),
+                _pageScale(context, l),
               ]),
               section(l, tr('路由与规则', 'Routes and rules'), [
                 navRow(l, tr('路由组', 'Route groups'), tr('{0} 个', '{0}', [app.ruleTargets.length]), onTap: () => pushPage(context, RoutesPage(app: app))),

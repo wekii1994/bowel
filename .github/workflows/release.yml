@@ -280,7 +280,7 @@ jobs:
       - name: Build the app
         working-directory: mobile/flutter
         run: |
-          flutter build apk --release --build-name="$VERSION" --build-number="$GITHUB_RUN_NUMBER"
+          flutter build apk --release --target-platform android-arm64 --build-name="$VERSION" --build-number="$GITHUB_RUN_NUMBER"
           mv build/app/outputs/flutter-apk/app-release.apk "bowel-$VERSION-android-arm64.apk"
 
       - uses: actions/upload-artifact@v7

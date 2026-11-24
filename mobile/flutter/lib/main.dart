@@ -75,38 +75,92 @@ class _RootState extends State<_Root> {
     final app = widget.app;
     final l = Look.of(app.skin, app.wantsDark(MediaQuery.platformBrightnessOf(context)), custom: app.accent);
     _syncShell(l);
+    final effectiveScale = app.pageScale.clamp(AppMediaQuery.minPageScale, AppMediaQuery.maxPageScale);
     return Skin(
       look: l,
       child: Material(
         type: MaterialType.transparency,
-        child: MediaQuery.withClampedTextScaling(
-          maxScaleFactor: 1,
-          child: ColoredBox(
-            color: l.paper,
-            child: Launch(
-              ready: widget.ready,
-              onOpen: () => setState(() => _open = true),
-              child: ValueListenableBuilder<EdgeInsets?>(
-                valueListenable: Shell.instance.insets,
-                builder: (context, native, _) {
-                  final media = MediaQuery.paddingOf(context);
-                  final frame = FrameData(
-                    top: native?.top ?? media.top,
-                    barInset: native?.bottom ?? 0,
-                    nativeBar: Shell.instance.native,
-                    homeIndicator: media.bottom,
-                    form: windowFormOf(MediaQuery.sizeOf(context)),
-                  );
-                  return Frame(
-                    data: frame,
-                    child: Stack(fit: StackFit.expand, children: [
-                      app.setup != 0 ? SetupPage(app: app) : _Tabs(app: app),
-                      const IgnorePointer(child: Deco()),
-                    ]),
-                  );
-                },
+        child: AppMediaQuery(
+          pageScale: app.pageScale,
+          child: MediaQuery.withClampedTextScaling(
+            maxScaleFactor: 1,
+            child: ColoredBox(
+              color: l.paper,
+              child: Launch(
+                ready: widget.ready,
+                onOpen: () => setState(() => _open = true),
+                child: ValueListenableBuilder<EdgeInsets?>(
+                  valueListenable: Shell.instance.insets,
+                  builder: (context, native, _) {
+                    final media = MediaQuery.paddingOf(context);
+                    final frame = FrameData(
+                      top: native?.top != null ? native!.top / effectiveScale : media.top,
+                      barInset: native?.bottom != null ? native!.bottom / effectiveScale : 0,
+                      nativeBar: Shell.instance.native,
+                      homeIndicator: media.bottom,
+                      form: windowFormOf(MediaQuery.sizeOf(context)),
+                    );
+                    return Frame(
+                      data: frame,
+                      child: Stack(fit: StackFit.expand, children: [
+                        app.setup != 0 ? SetupPage(app: app) : _Tabs(app: app),
+                        const IgnorePointer(child: Deco()),
+                      ]),
+                    );
+                  },
+                ),
               ),
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class AppMediaQuery extends StatelessWidget {
+  const AppMediaQuery({
+    super.key,
+    required this.pageScale,
+    required this.child,
+  });
+
+  final double pageScale;
+  final Widget child;
+
+  static const double minPageScale = 0.6;
+  static const double maxPageScale = 1.2;
+  static const double defaultPageScale = 1.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final mediaQueryData = MediaQuery.of(context);
+    final effectiveScale = pageScale.clamp(minPageScale, maxPageScale);
+    if ((effectiveScale - 1.0).abs() < 0.001) {
+      return child;
+    }
+    final originalSize = mediaQueryData.size;
+    final scaledSize = originalSize / effectiveScale;
+    return MediaQuery(
+      data: mediaQueryData.copyWith(
+        size: scaledSize,
+        padding: mediaQueryData.padding / effectiveScale,
+        viewPadding: mediaQueryData.viewPadding / effectiveScale,
+        viewInsets: mediaQueryData.viewInsets / effectiveScale,
+      ),
+      child: SizedBox(
+        width: originalSize.width,
+        height: originalSize.height,
+        child: OverflowBox(
+          minWidth: scaledSize.width,
+          maxWidth: scaledSize.width,
+          minHeight: scaledSize.height,
+          maxHeight: scaledSize.height,
+          alignment: Alignment.topLeft,
+          child: Transform.scale(
+            scale: effectiveScale,
+            alignment: Alignment.topLeft,
+            child: child,
           ),
         ),
       ),
