@@ -73,6 +73,7 @@ class _RootState extends State<_Root> {
   @override
   Widget build(BuildContext context) {
     final app = widget.app;
+    final unscaledSize = MediaQuery.sizeOf(context);
     final l = Look.of(app.skin, app.wantsDark(MediaQuery.platformBrightnessOf(context)), custom: app.accent);
     _syncShell(l);
     final effectiveScale = app.pageScale.clamp(AppMediaQuery.minPageScale, AppMediaQuery.maxPageScale);
@@ -98,7 +99,7 @@ class _RootState extends State<_Root> {
                       barInset: native?.bottom != null ? native!.bottom / effectiveScale : 0,
                       nativeBar: Shell.instance.native,
                       homeIndicator: media.bottom,
-                      form: windowFormOf(MediaQuery.sizeOf(context)),
+                      form: windowFormOf(unscaledSize),
                     );
                     return Frame(
                       data: frame,

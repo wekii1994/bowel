@@ -203,7 +203,7 @@ class _SettingsHomeState extends State<_SettingsHome> {
                       }
                     },
                     hint: '60 - 120',
-                    initial: '${(app.pageScale * 100).round()}',
+                    initial: '${(scale * 100).round()}',
                     note: tr('请输入 60 到 120 之间的整数百分比', 'Enter an integer percentage between 60 and 120'),
                     keyboard: TextInputType.number,
                   );
@@ -233,7 +233,7 @@ class _SettingsHomeState extends State<_SettingsHome> {
                     activeTrackColor: l.accent,
                     inactiveTrackColor: l.hair,
                     thumbColor: l.accent,
-                    overlayColor: l.accent.withAlpha(30),
+                    overlayColor: l.accent.withValues(alpha: .12),
                     trackHeight: 3,
                     thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
                     overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
