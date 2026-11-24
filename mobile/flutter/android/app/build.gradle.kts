@@ -49,16 +49,27 @@ android {
     // The rule data mihomo needs in its folder, the same files as the desktop's.
     sourceSets["main"].assets.srcDir("../../../../resources/geo")
 
+    val defaultKeystore = file("bowel.jks")
+    val hasSigningKey = releaseKey != null || defaultKeystore.exists()
+
     signingConfigs {
-        releaseKey?.let { key ->
+        if (hasSigningKey) {
             create("release") {
-                storeFile = rootProject.file(key.getProperty("storeFile"))
-                storePassword = key.getProperty("storePassword")
-                keyAlias = key.getProperty("keyAlias")
-                keyPassword = key.getProperty("keyPassword")
+                if (releaseKey != null) {
+                    storeFile = rootProject.file(releaseKey.getProperty("storeFile"))
+                    storePassword = releaseKey.getProperty("storePassword")
+                    keyAlias = releaseKey.getProperty("keyAlias")
+                    keyPassword = releaseKey.getProperty("keyPassword")
+                } else {
+                    storeFile = defaultKeystore
+                    storePassword = "android"
+                    keyAlias = "bowel"
+                    keyPassword = "android"
+                }
                 // With minSdk 26 the v1 (JAR) signature is off by default, and
                 // some phones' installers (vivo, HONOR) reject an APK without it.
                 enableV1Signing = true
+                enableV2Signing = true
             }
         }
     }
@@ -66,7 +77,7 @@ android {
     buildTypes {
         release {
             // The debug key keeps `flutter run --release` working without the release key.
-            signingConfig = signingConfigs.getByName(if (releaseKey != null) "release" else "debug")
+            signingConfig = signingConfigs.getByName(if (hasSigningKey) "release" else "debug")
         }
     }
 }

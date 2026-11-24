@@ -96,6 +96,14 @@ jobs:
           flutter build apk --release --target-platform android-arm64 --build-name="$VERSION" --build-number="$GITHUB_RUN_NUMBER"
           cp build/app/outputs/flutter-apk/app-release.apk "bowel-$VERSION-android-arm64.apk"
 
+      - name: Verify APK signature
+        working-directory: mobile/flutter
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          latest_apksigner=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)
+          "$latest_apksigner" verify --verbose --print-certs "bowel-$VERSION-android-arm64.apk"
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v7
         with:
