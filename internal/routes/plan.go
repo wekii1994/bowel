@@ -30,18 +30,39 @@ type Policy struct {
 	Mode      string   `json:"mode,omitempty"`
 	Regions   []string `json:"regions,omitempty"`   // ModeAuto: country codes; none is all
 	Providers []string `json:"providers,omitempty"` // ModeAuto: provider ids; none is all
+	// ExceptProviders turns Providers around: the providers it lists are
+	// left out and every other one is used, a provider added later too.
+	ExceptProviders bool `json:"exceptProviders,omitempty"`
 	// Nodes are the nodes picked by hand for ModeAuto, by their full names,
 	// so that a pick outlives an update of its subscription as long as the
 	// node keeps its name; none is every node Regions and Providers allow.
 	// A range is all three at once.
 	Nodes []string `json:"nodes,omitempty"`
-	Order []string `json:"order,omitempty"` // ModeOrder: node names, first preferred
-	Fixed string   `json:"fixed,omitempty"` // ModeFixed: a node name
+	// DownloadEvery makes ModeAuto choose by download speed instead of
+	// delay: every so many hours the nodes of the range that answer
+	// fastest download a test file, and the fastest download is used until
+	// it fails. 0 chooses by delay alone.
+	DownloadEvery int      `json:"downloadEvery,omitempty"`
+	Order         []string `json:"order,omitempty"` // ModeOrder: node names, first preferred
+	Fixed         string   `json:"fixed,omitempty"` // ModeFixed: a node name
 	// Direct sends the group's traffic out without a node; on the default
 	// route that is what no rule matched. The strategy stays, for when
 	// this is turned off, and the default route's for global mode too.
 	// 直连 and 拦截 never use a node and have no such choice (ChoosesExit).
 	Direct bool `json:"direct,omitempty"`
+}
+
+// DownloadEveries are the hours between the download tests of a group that
+// chooses by download speed, as the interface offers them.
+var DownloadEveries = []int{6, 12, 24}
+
+// ByDownload says whether the group chooses its node by download speed.
+func (p Policy) ByDownload() bool { return p.Mode == ModeAuto && p.DownloadEvery > 0 }
+
+// FromProvider says whether the automatic group may use the nodes of
+// provider id.
+func (p Policy) FromProvider(id string) bool {
+	return len(p.Providers) == 0 || slices.Contains(p.Providers, id) != p.ExceptProviders
 }
 
 // Scoped says whether the automatic group picks from less than every node.
@@ -343,12 +364,17 @@ func Build(p Plan, users []UserRule) []Route {
 }
 
 // Active are the user's rules that count now: those of a service switched
-// off, or of a group that is gone, do not.
+// off, or of a group that is gone, do not, nor one naming a GeoSite or
+// GeoIP list the core's data doesn't hold, which would make the core
+// refuse the whole config.
 func Active(all []Route, users []UserRule) []UserRule {
 	out := make([]UserRule, 0, len(users))
 	for _, u := range users {
 		i := slices.IndexFunc(all, func(r Route) bool { return r.ID == u.Route })
 		if i < 0 {
+			continue
+		}
+		if u.Unlisted() {
 			continue
 		}
 		j := slices.IndexFunc(all[i].Services, func(s Service) bool { return s.ID == u.Service })
@@ -496,8 +522,7 @@ func FindMatched(all []Route, ruleType, payload string) (Service, bool) {
 				if l.Off && l.Builtin {
 					continue
 				}
-				geo := l.Kind == KindGeo && t == "geosite" || l.Kind == KindGeoIP && t == "geoip"
-				if geo && strings.EqualFold(payload, l.Value) || !geo && (UserRule{Kind: l.Kind, Value: l.Value}).Matched(ruleType, payload) {
+				if (UserRule{Kind: l.Kind, Value: l.Value}).Matched(ruleType, payload) {
 					return s, true
 				}
 			}

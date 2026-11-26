@@ -1633,6 +1633,8 @@ func (u *UI) nodePicker(c *ui.Context, p *pal, rid string, w float32, lead func(
 				note(lockedOutSay(), true)
 			case r.Broken != "":
 				note(i18n.T("这个范围里没有可用节点，放宽地区、来源或勾选的节点。范围不会被悄悄放宽。", "No usable node in this range: widen the regions, sources or picked nodes. A range is never widened on its own."), true)
+			case q.ByDownload():
+				note(u.downloadSay(r, q), false)
 			default:
 				note(i18n.T("定时测速，在范围内用最快的；挂了自动换（◆ 为当前）。点节点可以直接固定到它。", "Tested on a schedule, using the fastest in range and moving on if it fails (◆ is current). Click a node to fix on it."), false)
 			}
@@ -1704,9 +1706,15 @@ func (u *UI) nodePicker(c *ui.Context, p *pal, rid string, w float32, lead func(
 		}
 		list = append(append(head, pick{head: i18n.T("点击加入", "Click to add")}), list...)
 	}
+	// With nothing to list, the same list holds the header and a line
+	// saying so: a different container would move the search field, which
+	// would lose the focus mid-word.
 	if len(list) == 0 {
-		ui.Scroll(c.Key("nodes")).Grow(1).Children(func() {
-			head()
+		ui.List(c.Key("nodes"), &h.nodes, 2, func(i int) {
+			if i == 0 {
+				ui.Column(c.Key("\x00head")).Children(head)
+				return
+			}
 			ui.Text(c, i18n.T("没有符合条件的节点", "No nodes match")).FontSize(12.5).TextColor(p.mute).Padding(30, 26)
 		})
 		return
@@ -1991,12 +1999,17 @@ func (u *UI) targetsDialog(c *ui.Context, p *pal, r RouteView) {
 	})
 }
 
+// rankOf orders the node lists: fastest first, then the failed, then the
+// untested last. A row that shows is tested (keepMeasured), and its result
+// must not bring another untested row into view: a failure ranked below the
+// untested ones did, and the list, row by row, tested every node it has
+// while it never stopped moving (#282).
 func rankOf(n NodeView) int {
 	switch {
 	case !n.Tested:
-		return 1 << 20
-	case n.Delay <= 0:
 		return 1 << 21
+	case n.Delay <= 0:
+		return 1 << 20
 	}
 	return n.Delay
 }

@@ -71,7 +71,11 @@ String _policyWord(AppState app, Map g, RouteCfg? rc) {
   if (mode == 'auto') {
     final names = {for (final r in _list(app.routing, 'regions')) r['code']: r['name'] as String};
     final providers = {for (final p in _list(app.routing, 'providers')) p['id']: p['name'] as String};
-    final scope = [for (final r in _strs(g, 'regions')) names[r] ?? r, for (final p in _strs(g, 'providers')) providers[p] ?? p];
+    final except = g['exceptProviders'] == true;
+    final scope = [
+      for (final r in _strs(g, 'regions')) names[r] ?? r,
+      for (final p in _strs(g, 'providers')) except ? tr('不用 {0}', 'not {0}', [providers[p] ?? p]) : providers[p] ?? p,
+    ];
     if (scope.isNotEmpty) return '${_modeName(mode)} · ${scope.join(tr('、', ', '))}';
   }
   return _modeName(mode);
@@ -480,8 +484,13 @@ class _GroupPageState extends State<GroupPage> {
     app.routeOp('setOrder', {'id': id, 'order': list});
   }
 
-  void _scope(Map g, {List<String>? regions, List<String>? providers}) {
-    app.routeOp('setScope', {'id': id, 'regions': regions ?? _strs(g, 'regions'), 'providers': providers ?? _strs(g, 'providers')});
+  void _scope(Map g, {List<String>? regions, List<String>? providers, bool? except}) {
+    app.routeOp('setScope', {
+      'id': id,
+      'regions': regions ?? _strs(g, 'regions'),
+      'providers': providers ?? _strs(g, 'providers'),
+      'exceptProviders': except ?? g['exceptProviders'] == true,
+    });
   }
 
   /// Where the group's traffic leaves, as on the desktop: by a node, or
@@ -593,9 +602,12 @@ class _GroupPageState extends State<GroupPage> {
   Widget _strategy(Look l, Map g, RouteCfg? rc) {
     final mode = _modeOf(g);
     final regions = _strs(g, 'regions'), providers = _strs(g, 'providers'), order = _strs(g, 'order');
+    // Picked providers are the only ones used, or with except the ones left out.
+    final except = g['exceptProviders'] == true;
+    bool fromProvider(String p) => providers.isEmpty || providers.contains(p) != except;
     final allRegions = _list(app.routing, 'regions'), allProviders = _list(app.routing, 'providers');
     // A chip counts what's left of the other filter; one chosen without nodes still shows.
-    int regionCount(String code) => _nodes.where((n) => n['country'] == code && (providers.isEmpty || providers.contains(n['providerId']))).length;
+    int regionCount(String code) => _nodes.where((n) => n['country'] == code && fromProvider(n['providerId'] as String? ?? '')).length;
     int providerCount(String p) => _nodes.where((n) => n['providerId'] == p && (regions.isEmpty || regions.contains(n['country']))).length;
     final known = {for (final r in allRegions) r['code'] as String};
     final regionChips = [
@@ -650,9 +662,15 @@ class _GroupPageState extends State<GroupPage> {
                 text: name,
                 count: providerCount(pid),
                 on: providers.contains(pid),
+                struck: except && providers.contains(pid),
                 onTap: () => _scope(g, providers: providers.contains(pid) ? ([...providers]..remove(pid)) : [...providers, pid]),
               ),
           ]),
+          if (providers.isNotEmpty)
+            _chips([
+              Chip(text: tr('只用所选', 'Only these'), on: !except, onTap: () => _scope(g, except: false)),
+              Chip(text: tr('排除所选', 'All but these'), on: except, onTap: () => _scope(g, except: true)),
+            ]),
         ]);
       }
     } else if (mode == 'fixed') {
@@ -844,9 +862,11 @@ class _GroupPageState extends State<GroupPage> {
   Widget _ruleRow(Look l, Map s, Map r, {bool fixed = false}) {
     final builtin = r['builtin'] == true, off = r['off'] == true || s['off'] == true;
     final skips = _skipsVpn(app, r);
+    final unlisted = r['unlisted'] == true; // its GeoSite or GeoIP list isn't in the data
+    final note = skips ? _skipsWord() : (unlisted ? tr('数据里没有这个列表，未生效', 'Not in the data: not in use') : null);
     final label = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Line1(r['shown'] as String? ?? '', l.text(14, color: off || skips ? l.mute : l.ink, lh: 20)),
-      Text(skips ? '${r['kindName']} · ${_skipsWord()}' : r['kindName'] as String? ?? '', style: l.text(12, color: skips ? l.warnT : l.mute, lh: 16)),
+      Line1(r['shown'] as String? ?? '', l.text(14, color: off || note != null ? l.mute : l.ink, lh: 20)),
+      Text(note != null ? '${r['kindName']} · $note' : r['kindName'] as String? ?? '', style: l.text(12, color: note != null ? l.warnT : l.mute, lh: 16)),
     ]);
     return Container(
       constraints: const BoxConstraints(minHeight: 44),
@@ -1395,9 +1415,12 @@ class _RuleSheetState extends State<_RuleSheet> {
           child: Text(
             _error ??
                 (_preview == null
-                    ? (_app
-                        ? tr('这个 App 的所有连接都走这个路由组，不管连到哪里，排在其他规则之前。', 'All of the app\'s connections go by this group, wherever they go, ahead of other rules.')
-                        : tr('粘贴链接也可以，会自动提取域名。', 'A pasted link works too: the domain is taken from it.'))
+                    ? switch (_kind) {
+                        'app' => tr('这个 App 的所有连接都走这个路由组，不管连到哪里，排在其他规则之前。', 'All of the app\'s connections go by this group, wherever they go, ahead of other rules.'),
+                        'geo' => tr('写 GeoSite 列表的名字，列表里的域名都走这个路由组。', 'Type a GeoSite list\'s name: the domains in it go by this group.'),
+                        'geoip' => tr('写 GeoIP 列表的名字，列表里的地址都走这个路由组。', 'Type a GeoIP list\'s name: the addresses in it go by this group.'),
+                        _ => tr('粘贴链接也可以，会自动提取域名；mihomo 的规则写法也认，如 GEOSITE,youtube。', 'A pasted link works too: the domain is taken from it. So does a rule as mihomo writes it, as GEOSITE,youtube.'),
+                      }
                     : _editing
                         ? tr('保存后：{0} · {1}', 'Will save: {0} · {1}', [_preview!['value'], _preview!['kindName']])
                         : tr('添加后：{0} · {1}', 'Will add: {0} · {1}', [_preview!['value'], _preview!['kindName']])),
@@ -1419,7 +1442,12 @@ class _RuleSheetState extends State<_RuleSheet> {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
         decoration: BoxDecoration(color: l.paper2, borderRadius: l.br(11)),
         child: BareField(
-            hint: _app ? tr('搜索 App，或写包名', 'Search apps, or type a package name') : tr('域名、IP 或链接', 'A domain, IP or link'),
+            hint: switch (_kind) {
+              'app' => tr('搜索 App，或写包名', 'Search apps, or type a package name'),
+              'geo' => tr('youtube、netflix 或 google@cn', 'youtube, netflix or google@cn'),
+              'geoip' => tr('CN、private 或 telegram', 'CN, private or telegram'),
+              _ => tr('域名、IP 或链接', 'A domain, IP or link'),
+            },
             controller: _c,
             autofocus: !_editing,
             keyboardType: _app ? TextInputType.text : TextInputType.url,

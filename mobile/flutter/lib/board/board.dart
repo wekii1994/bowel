@@ -114,7 +114,7 @@ Map<String, Rect> boardLayout(WindowForm form, String? x, double height, double 
   for (var i = 0; i < _rows.length; i++) {
     if (i != open) others += strip(_rows[i]);
   }
-  final openH = height - others;
+  final openH = math.max(0.0, height - others);
   var y = 0.0;
   for (var i = 0; i < _rows.length; i++) {
     final r = _rows[i];
@@ -150,13 +150,22 @@ class _BoardState extends State<Board> {
   Size _size = Size.zero;
   WindowForm _form = WindowForm.phone;
 
+  static final double _minPhoneBoardH = _mapStrip + _rowH.values.reduce((a, b) => a + b);
+
+  double _layoutHeightFor(String? x, double h) =>
+      _form == WindowForm.phone && x == null && h < _minPhoneBoardH ? _minPhoneBoardH : h;
+
   void _morph(VoidCallback change, {Map<String, String>? alias}) {
     final host = _host.currentState;
     if (host == null) {
       change();
       return;
     }
-    host.morph(change, finalCell: (cell) => boardLayout(_form, widget.app.x, _size.height, _size.width)[cell]!, alias: alias);
+    host.morph(
+      change,
+      finalCell: (cell) => boardLayout(_form, widget.app.x, _layoutHeightFor(widget.app.x, _size.height), _size.width)[cell]!,
+      alias: alias,
+    );
   }
 
   @override
@@ -180,8 +189,10 @@ class _BoardState extends State<Board> {
       builder: (context, c) {
         final h = c.maxHeight, w = c.maxWidth;
         _size = Size(w, h);
-        final boxes = boardLayout(_form, app.x, h, w), normal = boardLayout(_form, null, h, w);
-        return FlyHost(
+        final layoutH = _layoutHeightFor(app.x, h);
+        final scrollable = layoutH > h;
+        final boxes = boardLayout(_form, app.x, layoutH, w), normal = boardLayout(_form, null, layoutH, w);
+        final board = FlyHost(
           key: _host,
           child: ColoredBox(
             color: app.twisted ? l.paper : l.hair,
@@ -200,6 +211,10 @@ class _BoardState extends State<Board> {
               ],
             ),
           ),
+        );
+        if (!scrollable) return board;
+        return SingleChildScrollView(
+          child: SizedBox(width: w, height: layoutH, child: board),
         );
       },
     );

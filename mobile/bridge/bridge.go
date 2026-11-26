@@ -22,6 +22,7 @@ import (
 
 	"github.com/oboo/moho/internal/core"
 	"github.com/oboo/moho/internal/geo"
+	"github.com/oboo/moho/internal/geodata"
 	"github.com/oboo/moho/internal/i18n"
 	"github.com/oboo/moho/internal/locate"
 	"github.com/oboo/moho/internal/mihomo"
@@ -130,6 +131,7 @@ func Start(dir string, sink Sink) error {
 		return err
 	}
 	i18n.Set(set.Get().Language)
+	geodata.Use(dir) // the core's, where its GeoSite.dat and GeoIP.dat are
 	nb := &bridge{
 		dir: dir, sink: sink, store: store, set: set,
 		mon: monitor.New(filepath.Join(dir, "stats.json")), vpn: "off", lastNode: map[string]string{},
@@ -573,6 +575,7 @@ type callArgs struct {
 	Service   string          `json:"service"`
 	Regions   []string        `json:"regions"`
 	Providers []string        `json:"providers"`
+	Except    *bool           `json:"exceptProviders"` // setScope's: Providers are left out; unsent keeps it
 	Order     []string        `json:"order"`
 	Targets   []routes.Target `json:"targets"`
 	Patch     json.RawMessage `json:"patch"`

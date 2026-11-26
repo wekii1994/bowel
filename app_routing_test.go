@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/oboo/moho/internal/core"
 	"github.com/oboo/moho/internal/gateway"
+	"github.com/oboo/moho/internal/geodata"
 	"github.com/oboo/moho/internal/mihomo"
 	"github.com/oboo/moho/internal/routes"
 	"github.com/oboo/moho/internal/settings"
@@ -429,6 +431,18 @@ func TestInScopePicks(t *testing.T) {
 	}
 }
 
+// TestInScopeExcept (#272): a range that leaves a provider out takes every
+// other's nodes, and says which it leaves out.
+func TestInScopeExcept(t *testing.T) {
+	q := routes.Policy{Providers: []string{"home"}, ExceptProviders: true}
+	if inScope(q, "a‹home", "home", "CN") || !inScope(q, "b‹air", "air", "HK") {
+		t.Error("except home")
+	}
+	if w := scopeWord(q, func(id string) string { return "回家" }); !strings.Contains(w, "不用 回家") {
+		t.Errorf("scopeWord = %q", w)
+	}
+}
+
 // TestHiddenNodesOnCore: a node removed from its Provider (#160) is gone
 // from the core and from the ranges that picked it by hand; a range it was
 // all of is red rather than wider, and restoring it makes the group whole.
@@ -487,5 +501,93 @@ func TestHiddenNodesOnCore(t *testing.T) {
 	}
 	if _, err := a.hideNode("no-marker", true); err == nil {
 		t.Error("a node of no provider")
+	}
+}
+
+// TestMoveProviderOnCore (#272): moving a provider first lists its nodes
+// first, in the snapshot and in the core's groups; leaving it out of a
+// range keeps the others' nodes, and one added later's too.
+func TestMoveProviderOnCore(t *testing.T) {
+	a, _ := routingApp(t, nil)
+	first := a.providers.List()[0].ID
+	p, err := a.providers.Add(context.Background(), nil, "trojan://pw@two.example:443#second-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.applyConfig(); err != nil {
+		t.Fatal(err)
+	}
+	ai := routeOf(t, a, "ai")
+	at := func(list []string) int {
+		return slices.IndexFunc(list, func(n string) bool { return strings.Contains(n, "second-node") })
+	}
+	if got := coreProxies(t, a)[routes.Auto(ai)].All; at(got) != len(got)-1 {
+		t.Errorf("before the move, the second's node isn't last: %q", got)
+	}
+	if err := a.moveProvider(p.ID, first); err != nil {
+		t.Fatal(err)
+	}
+	snap := a.snapshot()
+	if snap.Providers[0].ID != p.ID || !strings.Contains(snap.Nodes[0].Name, "second-node") {
+		t.Errorf("snapshot after the move: %v / %v", snap.Providers[0].ID, snap.Nodes[0].Name)
+	}
+	if got := coreProxies(t, a)[routes.Auto(ai)].All; at(got) != 0 {
+		t.Errorf("after the move, the second's node isn't first: %q", got)
+	}
+
+	// Leave the first provider out: only the second's node is in range.
+	changeRouting(t, a, func(pl *routes.Plan) {
+		pl.ChangePolicy("ai", func(q *routes.Policy) { q.Providers, q.ExceptProviders = []string{first}, true })
+	})
+	got := coreProxies(t, a)[routes.Auto(ai)].All
+	if len(got) != 1 || !strings.Contains(got[0], "second-node") {
+		t.Errorf("all but the first: %q", got)
+	}
+	if _, err := a.providers.Add(context.Background(), nil, "trojan://pw@three.example:443#third-node"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.applyConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if got := coreProxies(t, a)[routes.Auto(ai)].All; len(got) != 2 {
+		t.Errorf("a provider added later isn't in range: %q", got)
+	}
+}
+
+// TestGeoRulesOnCore: the user's rules for GeoSite and GeoIP lists reach
+// the core as it reads them, and one whose list the data doesn't hold is
+// left out, where it would have made the core refuse the whole config.
+func TestGeoRulesOnCore(t *testing.T) {
+	a, _ := routingApp(t, nil)
+	if !exists(filepath.Join(a.core.Dir, geodata.SiteFile)) {
+		t.Skip("no GeoSite data; run scripts/fetch-core.sh")
+	}
+	old := routes.GeoLists
+	t.Cleanup(func() { routes.GeoLists = old })
+	geodata.Use(a.core.Dir)
+	var add []routes.UserRule
+	for _, text := range []string{"GEOSITE,YouTube,Proxy", "geosite:google@cn", "geoip:telegram"} {
+		r, err := routes.ParseRule("", text, "ai")
+		if err != nil {
+			t.Fatalf("%s: %v", text, err)
+		}
+		add = append(add, r)
+	}
+	if r, err := routes.ParseRule(routes.KindGeo, "no-such-list", "ai"); err == nil {
+		t.Fatalf("a list the data hasn't: %+v", r)
+	}
+	gone := routes.UserRule{Kind: routes.KindGeo, Value: "no-such-list", Route: "ai"} // saved before the data dropped it
+	if err := a.updateSettings(func(s *settings.Settings) { s.Rules = append(append(s.Rules, add...), gone) }); err != nil {
+		t.Fatalf("the core took the rules badly: %v", err)
+	}
+	cfg := coreConfig(t, a)
+	ai := routes.Group(routeOf(t, a, "ai"))
+	for _, want := range []string{"GEOSITE,youtube," + ai, "GEOSITE,google@cn," + ai, "GEOIP,telegram," + ai + ",no-resolve"} {
+		if !strings.Contains(cfg, want) {
+			t.Errorf("no %q at the core:\n%s", want, cfg)
+		}
+	}
+	if strings.Contains(cfg, "no-such-list") {
+		t.Errorf("the list the data hasn't reached the core:\n%s", cfg)
 	}
 }

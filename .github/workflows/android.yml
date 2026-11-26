@@ -88,6 +88,13 @@ jobs:
             echo "keyPassword=$ANDROID_KEY_PASSWORD"
           } > key.properties
 
+      - name: Run Flutter analyze and tests
+        working-directory: mobile/flutter
+        run: |
+          flutter pub get
+          flutter analyze --no-fatal-infos
+          flutter test
+
       - name: Build arm64-v8a APK
         working-directory: mobile/flutter
         env:

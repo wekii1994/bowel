@@ -41,6 +41,8 @@ type providersUI struct {
 
 	popup bool // a select's options are open (they take Escape)
 
+	usedW float32 // how wide the nodes' 被哪些路由使用 column was, the frame before
+
 	// The camera's dialog: scanning for a code to add.
 	camOpen  bool
 	cam      *qr.Camera // open while the dialog shows
@@ -396,6 +398,11 @@ func (u *UI) provRow(c *ui.Context, p *pal, pv ProviderView) {
 		if !pv.Enabled {
 			row.Opacity(.45)
 		}
+		sorts := len(u.snap.Providers) > 1
+		mark := func() {}
+		if sorts {
+			mark = u.sortsProvider(c, p, row, pv.ID)
+		}
 		row.OnClick(func() {
 			if pr.open == pv.ID {
 				pr.open = ""
@@ -403,6 +410,14 @@ func (u *UI) provRow(c *ui.Context, p *pal, pv ProviderView) {
 				pr.open = pv.ID
 			}
 		}).Children(func() {
+			mark()
+			if sorts {
+				gc := p.faint
+				if row.Hovered() {
+					gc = p.ink2
+				}
+				grip(c, gc, 10).Margin(0, -10, 0, -2)
+			}
 			u.provName(c, p, pv, busy, nodes)
 			provUsage(c, p, pv)
 			provHealth(c, p, nodes)
@@ -414,6 +429,54 @@ func (u *UI) provRow(c *ui.Context, p *pal, pv ProviderView) {
 				Transition(provRowMotion).Children(func() { u.provNodes(c, p, pv, nodes) })
 		}
 	})
+}
+
+// provDrag is a provider being dragged to another's place, by its id.
+type provDrag string
+
+// sortsProvider makes provider id's row b one to drag to another's place,
+// and the place of one dragged to it: the order of the providers is that
+// of their nodes everywhere. mark, called among the row's children, draws
+// the edge the dragged one would come in at.
+func (u *UI) sortsProvider(c *ui.Context, p *pal, b ui.Element, id string) (mark func()) {
+	b.Drag(provDrag(id)).Tooltip(i18n.T("拖动调整顺序，节点按这个顺序排列", "Drag to reorder; nodes are listed in this order"))
+	if b.Dragging() {
+		b.Opacity(.35)
+	}
+	if d, ok := ui.Drop[provDrag](b); ok && string(d) != id {
+		u.moveProvider(string(d), id)
+	}
+	d, over := ui.DragOver[provDrag](b)
+	return func() {
+		if !over || string(d) == id {
+			return
+		}
+		at := func(id string) int {
+			return slices.IndexFunc(u.snap.Providers, func(pv ProviderView) bool { return pv.ID == id })
+		}
+		line := ui.Box(c.Key("drop")).Absolute().Left(0).Right(0).Height(2).Radius(1).Background(p.accentLine).IgnoreInput(true).AccessHidden(true)
+		if at(string(d)) < at(id) {
+			line.Bottom(0)
+		} else {
+			line.Top(0)
+		}
+	}
+}
+
+// moveProvider gives provider id to's place: in the list at once, and in
+// the app, whose next snapshot has their nodes in the new order too.
+func (u *UI) moveProvider(id, to string) {
+	list := u.snap.Providers
+	from := slices.IndexFunc(list, func(pv ProviderView) bool { return pv.ID == id })
+	at := slices.IndexFunc(list, func(pv ProviderView) bool { return pv.ID == to })
+	if from < 0 || at < 0 || from == at {
+		return
+	}
+	pv := list[from]
+	u.snap.Providers = slices.Insert(slices.Delete(slices.Clone(list), from, from+1), at, pv)
+	if u.app != nil {
+		u.do(func() error { return u.app.moveProvider(id, to) })
+	}
 }
 
 func (u *UI) provName(c *ui.Context, p *pal, pv ProviderView, busy bool, nodes []NodeView) {
@@ -786,22 +849,7 @@ func (u *UI) provNodes(c *ui.Context, p *pal, pv ProviderView, nodes []NodeView)
 					locTag(c, p, n.Where.Source)
 				},
 				func() { ui.Text(c, n.Type).FontSize(12).TextColor(p.mute).MaxLines(1) },
-				func() {
-					used := false
-					for _, r := range u.snap.Routes {
-						if r.Node == "" || r.Node != n.Name {
-							continue
-						}
-						used = true
-						ui.Row(c.Key(r.ID)).Gap(5).AlignItems(ui.Center).Children(func() {
-							swatch(c, p.routeColor(r.ID), 8)
-							ui.Text(c, r.Name).FontSize(12).TextColor(p.ink).NoWrap()
-						})
-					}
-					if !used {
-						ui.Text(c, "—").FontSize(12).TextColor(p.faint)
-					}
-				},
+				func() { u.provUsedBy(c, p, n.Name) },
 				func() {
 					ui.Text(c, fmtMs(n.Ping, n.Ping > 0)).FontSize(12).FontWeight(600).TextColor(delayColor(p, n.Ping, n.Ping > 0)).NoWrap()
 				},
@@ -863,6 +911,87 @@ func (u *UI) provNodes(c *ui.Context, p *pal, pv ProviderView, nodes []NodeView)
 		ui.Box(c).Width(1).Height(18).Margin(0, 4).Background(p.hair)
 		u.provManage(c, p, pv)
 	})
+}
+
+// provUsedBy lists the routes that use node, as many as its column has
+// room for, the rest in a +N that names them all when pointed at, so a
+// narrow window doesn't push the names over the Ping column (issue 265).
+func (u *UI) provUsedBy(c *ui.Context, p *pal, node string) {
+	var used []RouteView
+	for _, r := range u.snap.Routes {
+		if r.Node != "" && r.Node == node {
+			used = append(used, r)
+		}
+	}
+	if len(used) == 0 {
+		ui.Text(c, "—").FontSize(12).TextColor(p.faint)
+		return
+	}
+	box := ui.Row(c).Gap(6).AlignItems(ui.Center).Grow(1).Basis(0).MinWidth(0).Clip()
+	room := box.LayoutBounds().W
+	// The room is the last frame's: when it changed, as a window being
+	// made narrower changes it, one more frame fits the chips to it.
+	if room > 0 && room != u.prov.usedW {
+		u.prov.usedW = room
+		c.Invalidate()
+	}
+	shown := fitChips(room, len(used), func(i int) float32 {
+		w, _ := c.MeasureText(0, ui.Span{Text: used[i].Name, Size: 12})
+		return 8 + 5 + w // the swatch, the gap, the name
+	}, func(n int) float32 {
+		w, _ := c.MeasureText(0, ui.Span{Text: fmt.Sprintf("+%d", n), Size: 11, Weight: 600})
+		return w + 12 // its padding
+	})
+	box.Children(func() {
+		for _, r := range used[:shown] {
+			ui.Row(c.Key(r.ID)).Gap(5).AlignItems(ui.Center).Shrink(0).Children(func() {
+				swatch(c, p.routeColor(r.ID), 8)
+				ui.Text(c, r.Name).FontSize(12).TextColor(p.ink).NoWrap()
+			})
+		}
+		if rest := len(used) - shown; rest > 0 {
+			names := make([]string, len(used))
+			for i, r := range used {
+				names[i] = r.Name
+			}
+			ui.Text(c.Key("more"), fmt.Sprintf("+%d", rest)).FontSize(11).FontWeight(600).TextColor(p.ink2).NoWrap().Shrink(0).
+				Padding(1, 6).Radius(p.r(99)).Background(p.hair2).Tooltip(strings.Join(names, i18n.T("、", ", ")))
+		}
+	})
+}
+
+// fitChips is how many of n chips, chip(i) wide and 6 apart, fit in room,
+// with a more(rest) wide +N after them for the rest. It is all of them
+// when they fit, or before the room is known; at least none.
+func fitChips(room float32, n int, chip func(int) float32, more func(int) float32) int {
+	const gap = 6
+	if room <= 0 {
+		return n
+	}
+	ws := make([]float32, n)
+	total := float32(0)
+	for i := range n {
+		ws[i] = chip(i)
+		total += ws[i]
+		if i > 0 {
+			total += gap
+		}
+	}
+	if total <= room {
+		return n
+	}
+	used := float32(0)
+	for k := range n {
+		next := used + ws[k]
+		if k > 0 {
+			next += gap
+		}
+		if next+gap+more(n-k-1) > room {
+			return k
+		}
+		used = next
+	}
+	return n
 }
 
 // provHide removes node (its full name) from its provider. It can be

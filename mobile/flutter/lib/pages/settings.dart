@@ -145,6 +145,11 @@ class _SettingsHomeState extends State<_SettingsHome> {
     final scale = _pageScaleDraft ?? app.pageScale;
     final percent = '${(scale * 100).round()}%';
     final isDefault = (scale - 1.0).abs() < 0.005;
+    final titleStyle = l.text(15, lh: 21);
+    final subStyle = l.text(12.5, color: l.mute, lh: 17);
+    final badgeStyle = l.text(13, weight: 600, color: l.accent, lh: 18);
+    final resetStyle = l.text(12, color: l.mute, lh: 16);
+    final boundStyle = l.text(11.5, color: l.mute, lh: 16);
 
     return Padding(
       padding: const EdgeInsets.only(top: 10, bottom: 2),
@@ -159,10 +164,11 @@ class _SettingsHomeState extends State<_SettingsHome> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(tr('页面缩放', 'Page scale'), style: l.text(15, lh: 21)),
+                    Text(tr('页面缩放', 'Page scale'), style: titleStyle, strutStyle: strutOf(titleStyle)),
                     Text(
                       tr('全局等比无损缩放 (60% ~ 120%)', 'Global lossless scaling (60% ~ 120%)'),
-                      style: l.text(12.5, color: l.mute, lh: 17),
+                      style: subStyle,
+                      strutStyle: strutOf(subStyle),
                     ),
                   ],
                 ),
@@ -185,7 +191,8 @@ class _SettingsHomeState extends State<_SettingsHome> {
                     ),
                     child: Text(
                       tr('重置', 'Reset'),
-                      style: l.text(12, color: l.mute, lh: 16),
+                      style: resetStyle,
+                      strutStyle: strutOf(resetStyle),
                     ),
                   ),
                 ),
@@ -196,11 +203,13 @@ class _SettingsHomeState extends State<_SettingsHome> {
                     app,
                     tr('页面缩放', 'Page scale'),
                     (v) {
-                      final val = int.tryParse(v.trim());
-                      if (val != null) {
-                        setState(() => _pageScaleDraft = null);
-                        app.setPageScale(val / 100.0);
+                      final val = int.tryParse(v.trim().replaceAll('%', ''));
+                      if (val == null || val < 60 || val > 120) {
+                        app.say(tr('请输入 60 到 120 之间的整数百分比', 'Enter an integer percentage between 60 and 120'));
+                        return;
                       }
+                      setState(() => _pageScaleDraft = null);
+                      app.setPageScale(val / 100.0);
                     },
                     hint: '60 - 120',
                     initial: '${(scale * 100).round()}',
@@ -217,7 +226,8 @@ class _SettingsHomeState extends State<_SettingsHome> {
                   ),
                   child: Text(
                     percent,
-                    style: l.text(13, weight: 600, color: l.accent, lh: 18),
+                    style: badgeStyle,
+                    strutStyle: strutOf(badgeStyle),
                   ),
                 ),
               ),
@@ -226,7 +236,7 @@ class _SettingsHomeState extends State<_SettingsHome> {
           const SizedBox(height: 6),
           Row(
             children: [
-              Text('60%', style: l.text(11.5, color: l.mute, lh: 16)),
+              Text('60%', style: boundStyle, strutStyle: strutOf(boundStyle)),
               Expanded(
                 child: SliderTheme(
                   data: SliderThemeData(
@@ -251,7 +261,7 @@ class _SettingsHomeState extends State<_SettingsHome> {
                   ),
                 ),
               ),
-              Text('120%', style: l.text(11.5, color: l.mute, lh: 16)),
+              Text('120%', style: boundStyle, strutStyle: strutOf(boundStyle)),
             ],
           ),
         ],

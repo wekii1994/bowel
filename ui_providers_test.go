@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -311,4 +313,99 @@ func TestProviderRowTest(t *testing.T) {
 		t.Errorf("a row being tested doesn't say so: %q", tt.Texts())
 	}
 	shot(t, tt, "providers-testing")
+}
+
+// TestProviderUsedByFits: a node many routes use lists as many as its
+// column has room for and a +N for the rest, which names them all, so a
+// narrow window doesn't put the names over the Ping column (issue 265).
+func TestProviderUsedByFits(t *testing.T) {
+	for _, w := range []int{960, 1600} {
+		u := providersUIFixture()
+		node := u.snap.Nodes[0]
+		u.snap.Nodes[0].Ping = 777
+		var names []string
+		for i := range u.snap.Routes {
+			if r := &u.snap.Routes[i]; !r.Direct {
+				r.Node = node.Name
+				names = append(names, r.Name)
+			}
+		}
+		u.prov.open = "a"
+		tt := ui.NewTester(u.view, w, 760)
+		tt.Advance(time.Second)
+		tt.Frame()
+		shot(t, tt, fmt.Sprintf("providers-used-by-%v", w))
+		ping, ok := tt.Find("777 ms")
+		if !ok {
+			t.Fatalf("%v: no Ping 777 ms: %q", w, tt.Texts())
+		}
+		pingCol := ping.X + ping.W - 64 // the column is 64 wide, its text at the end
+		shown := 0
+		for _, n := range names {
+			r, ok := tt.Find(n)
+			if !ok || r.Y > ping.Y+ping.H || r.Y+r.H < ping.Y {
+				continue
+			}
+			shown++
+			if r.X+r.W > pingCol {
+				t.Errorf("%v: %s ends at %v, over the Ping column at %v", w, n, r.X+r.W, pingCol)
+			}
+		}
+		rest := len(names) - shown
+		more, ok := tt.Find(fmt.Sprintf("+%d", rest))
+		switch {
+		case rest == 0 && w == 960:
+			t.Errorf("%v: all %d routes shown, none collapsed", w, len(names))
+		case rest > 0 && w == 1600:
+			t.Errorf("%v: only %d of %d routes shown", w, shown, len(names))
+		case rest > 0 && !ok:
+			t.Errorf("%v: %d routes shown, no +%d: %q", w, shown, rest, tt.Texts())
+		case rest > 0 && more.X+more.W > pingCol:
+			t.Errorf("%v: +%d ends at %v, over the Ping column at %v", w, rest, more.X+more.W, pingCol)
+		}
+		if rest == 0 {
+			continue
+		}
+		// Pointing at the +N names every route that uses the node.
+		tt.Move(more.X+more.W/2, more.Y+more.H/2)
+		tt.Advance(2 * time.Second)
+		shot(t, tt, fmt.Sprintf("providers-used-by-%v-tip", w))
+		if all := strings.Join(names, "、"); !tt.HasText(all) {
+			t.Errorf("%v: pointing at +%d doesn't show %q: %q", w, rest, all, tt.Texts())
+		}
+	}
+}
+
+// TestProviderRowsDrag (#272): a provider dragged onto another takes its
+// place, at once in the list; a click still opens a row.
+func TestProviderRowsDrag(t *testing.T) {
+	u := providersUIFixture()
+	tt := ui.NewTester(u.view, 1060, 760)
+	tt.Advance(time.Second)
+	ids := func() []string {
+		var out []string
+		for _, pv := range u.snap.Providers {
+			out = append(out, pv.ID)
+		}
+		return out
+	}
+	was := ids()
+	if len(was) < 3 {
+		t.Fatalf("the fixture has %d providers", len(was))
+	}
+	dragOnto(t, tt, "自建 · 洛杉矶 VPS", "机场 A")
+	tt.Advance(time.Second)
+	moved := ids()
+	if moved[0] != was[2] || moved[1] != was[0] || moved[2] != was[1] {
+		t.Errorf("after dragging the third onto the first: %v, was %v", moved, was)
+	}
+	if u.prov.open != "" {
+		t.Errorf("a drag opened row %q", u.prov.open)
+	}
+	a, _ := tt.Find("机场 A")
+	b, _ := tt.Find("自建 · 洛杉矶 VPS")
+	if b.Y >= a.Y {
+		t.Error("the moved row isn't shown first")
+	}
+	shot(t, tt, "providers-dragged")
 }

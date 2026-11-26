@@ -33,6 +33,7 @@ import (
 	"github.com/oboo/moho/internal/devnet"
 	"github.com/oboo/moho/internal/gateway"
 	"github.com/oboo/moho/internal/geo"
+	"github.com/oboo/moho/internal/geodata"
 	"github.com/oboo/moho/internal/i18n"
 	"github.com/oboo/moho/internal/locate"
 	"github.com/oboo/moho/internal/mihomo"
@@ -137,6 +138,14 @@ type App struct {
 	emitQueued  bool
 	win         *mygo.Window
 	ui          *UI
+
+	// picks are what the scheduled download tests chose, by route id, and
+	// downloadTried when each was last started; downloading, that some are
+	// running (runDueDownloads).
+	picks         map[string]downloadPick
+	downloadTried map[string]time.Time
+	downloading   bool
+
 	// winShown is whether the main window is shown, kept from its events
 	// for goroutines that may not wait on the main thread to ask.
 	winShown atomic.Bool
@@ -180,9 +189,13 @@ func newApp() (*App, error) {
 		return nil, err
 	}
 	migrateData(data)
+	fresh := !exists(filepath.Join(data, "settings.json"))
 	st, err := settings.Open(data)
 	if err != nil {
 		return nil, err
+	}
+	if fresh && inContainer() {
+		seedContainer(st, data)
 	}
 	i18n.Set(st.Get().Language)
 	provDir := storeDir(data, "providers", runtime.GOOS)
@@ -197,9 +210,12 @@ func newApp() (*App, error) {
 	bin := bundledCore()
 	tun.CoreDir = filepath.Join(data, "core") // where the core runs, below
 	tunBin := tun.Path(data, core.TunName(filepath.Base(bin)))
+	if tun.RootCore() {
+		tunBin = bin // root's child has TUN's rights already: no copy
+	}
 	run := bin
 	stale := false
-	if tun.Installed(tunBin) {
+	if tunBin != bin && tun.Installed(tunBin) {
 		// A root copy older than this version, or on macOS one signed under
 		// a name that cannot tell applications apart: while TUN needs it, it
 		// stays until the user authorizes a new one; otherwise the new core
@@ -229,6 +245,7 @@ func newApp() (*App, error) {
 	}
 	ps.Vet = a.vetUpdate
 	a.startSpeed()
+	a.loadDownloadPicks()
 	a.tunStale.Store(stale)
 	cm.SafePaths = []string{provDir, sets.Dir()} // for a core that is the app's child; see storeDir
 	a.keepRuleSets()
@@ -323,7 +340,7 @@ func exists(p string) bool { _, err := os.Stat(p); return err == nil }
 // copyGeo puts the bundled rule data next to the core's config once.
 func (a *App) copyGeo() {
 	res, _ := mygo.App.Path(mygo.PathResources)
-	for _, f := range []string{"GeoSite.dat", "GeoIP.dat"} {
+	for _, f := range []string{geodata.SiteFile, geodata.IPFile} {
 		dst := filepath.Join(a.core.Dir, f)
 		if exists(dst) {
 			continue
@@ -347,6 +364,7 @@ func (a *App) start() {
 	a.openWindow()
 	a.setupTray()
 	a.copyGeo()
+	geodata.Use(a.core.Dir)
 	go func() {
 		a.detectDev(2 * time.Second)
 		if err := a.applyConfig(); err != nil {
@@ -615,7 +633,9 @@ func (a *App) refresh() {
 				a.nodesSig, a.nodesAt = sig, time.Now()
 			}
 			a.mu.Unlock()
+			a.followDownloads(px)
 			a.noticeSwitches()
+			a.runDueDownloads()
 			if stale {
 				a.keepMeasured()
 			}
@@ -1130,6 +1150,11 @@ func (a *App) setSystemProxy(on bool) error {
 func (a *App) setTun(on bool) error {
 	done := a.begin("entry:tun")
 	defer done()
+	if on {
+		if err := tun.DeviceReady(); err != nil {
+			return err
+		}
+	}
 	if on && a.tunNeedsInstall() {
 		if err := a.installTun(); err != nil {
 			return err
@@ -1972,6 +1997,16 @@ func (a *App) renameProvider(id, name string) error {
 	return err
 }
 
+// moveProvider gives provider id the place of provider to. Their order is
+// that of the nodes everywhere, the core's groups too.
+func (a *App) moveProvider(id, to string) error {
+	moved, err := a.providers.Move(id, to)
+	if err != nil || !moved {
+		return err
+	}
+	return a.applyConfig()
+}
+
 func (a *App) setAutoUpdate(id string, hours int) error {
 	_, err := a.providers.SetAutoUpdate(id, hours)
 	a.emit()
@@ -2538,7 +2573,7 @@ func (a *App) snapshot() Snapshot {
 	a.mu.Lock()
 	sys, proxyErr, px, provNodes, you := a.sys, a.proxyErr, a.proxies, a.provNodes, a.you
 	note := a.switched // taken with px: a refresh may record a newer switch
-	pings, bandwidth := a.pings, a.bandwidth
+	pings, bandwidth, picks := a.pings, a.bandwidth, a.picks
 	openAtLogin := a.openAtLogin
 	gwp, gwErr := a.gwProbe, a.gwErr
 	pending := make([]string, 0, len(a.pending))
@@ -2706,6 +2741,17 @@ func (a *App) snapshot() Snapshot {
 				through = px[rv.Node]
 			}
 			rv.Main, rv.Sites = rv.Targets[0], siteViews(&a.refused, rv.Targets[1:], rv.Node, through, stale, now)
+			if r.Policy.ByDownload() {
+				pk, ok := picks[r.ID]
+				d := &DownloadPickView{Node: pk.Node, Mbps: float64(pk.Bps) / 1e6, At: pk.At, Next: now}
+				if ok {
+					d.Next = pk.At.Add(time.Duration(r.Policy.DownloadEvery) * time.Hour)
+				}
+				if d.Node != "" {
+					d.Node = a.listedNode(d.Node, provNodes)
+				}
+				rv.Download = d
+			}
 			rv.Broken = brokenWhy(r.Policy, snap.Nodes, r.ID)
 			if rv.Broken == "" && rv.Locked && noneAlive(snap.Nodes, r.ID) {
 				rv.Broken = "all" // the lock leaves it REJECT where another group would go direct

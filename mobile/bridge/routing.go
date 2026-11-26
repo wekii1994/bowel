@@ -89,7 +89,7 @@ func (x *bridge) fileNodes() []string {
 }
 
 func inScope(q routes.Policy, name, provider, country string) bool {
-	return (len(q.Providers) == 0 || slices.Contains(q.Providers, provider)) &&
+	return q.FromProvider(provider) &&
 		(len(q.Regions) == 0 || slices.Contains(q.Regions, country)) &&
 		(len(q.Nodes) == 0 || slices.Contains(q.Nodes, name))
 }
@@ -176,6 +176,9 @@ type ruleData struct {
 	Shown    string `json:"shown"`
 	Builtin  bool   `json:"builtin"`
 	Off      bool   `json:"off"`
+	// Unlisted is a rule of the user's whose GeoSite or GeoIP list the data
+	// doesn't have: it doesn't count until it does.
+	Unlisted bool `json:"unlisted,omitempty"`
 }
 
 type serviceData struct {
@@ -204,6 +207,7 @@ type groupData struct {
 	Mode      string          `json:"mode"`
 	Regions   []string        `json:"regions"`
 	Providers []string        `json:"providers"`
+	Except    bool            `json:"exceptProviders"` // Providers are the ones left out
 	Order     []string        `json:"order"`
 	Fixed     string          `json:"fixed"`
 	Now       string          `json:"now"`
@@ -302,7 +306,7 @@ func (x *bridge) routing() routingData {
 	slices.SortFunc(out.Regions, func(a, b regionData) int { return b.Count - a.Count })
 	for _, r := range all {
 		g := groupData{ID: r.ID, Name: routes.Title(r), Summary: routes.Describe(r), Direct: r.Direct, Reject: r.Reject, Custom: r.Custom, Movable: routes.Movable(r.ID), Chooses: choosesExit(r.ID), Locked: r.Locked, Lockable: routes.Lockable(r.ID),
-			Mode: r.Policy.Mode, Regions: nonNil(r.Policy.Regions), Providers: nonNil(r.Policy.Providers), Order: nonNil(r.Policy.Order), Fixed: r.Policy.Fixed,
+			Mode: r.Policy.Mode, Regions: nonNil(r.Policy.Regions), Providers: nonNil(r.Policy.Providers), Except: r.Policy.ExceptProviders, Order: nonNil(r.Policy.Order), Fixed: r.Policy.Fixed,
 			Services: []serviceData{}, Targets: []routes.Target{}, Sites: []siteDelay{}}
 		if im != nil {
 			g.Movable, g.Chooses, g.Locked, g.Lockable = false, false, false, false
@@ -313,7 +317,7 @@ func (x *bridge) routing() routingData {
 			g.Targets = s.TargetsOf(r.ID)
 			for _, t := range g.Targets[1:] { // the node's own tests of them, as the core keeps them
 				sd := siteDelay{Name: t.Name, URL: t.URL}
-				sd.Delay, sd.Tested = rd.last(px[node].HistoryOf(t.URL)) // a failure is 0: a timeout, or the site's refusal
+				sd.Delay, sd.Tested = rd.last(px[node].ResultsOf(t.URL)) // a failure is 0: a timeout, or the site's refusal
 				sd.Refused = rd.refusedOn(node, t.URL, px[node])
 				g.Sites = append(g.Sites, sd)
 			}
@@ -321,7 +325,8 @@ func (x *bridge) routing() routingData {
 		for _, sv := range r.Services {
 			d := serviceData{ID: sv.ID, Name: routes.ServiceTitle(sv), Builtin: sv.Builtin, Mine: sv.Mine, Off: sv.Off, Changed: sv.Changed, Rules: []ruleData{}}
 			for _, l := range sv.Rules {
-				d.Rules = append(d.Rules, ruleData{Text: l.Text, Kind: l.Kind, KindName: routes.KindName(l.Kind), Value: l.Value, Shown: l.Shown(), Builtin: l.Builtin, Off: l.Off})
+				d.Rules = append(d.Rules, ruleData{Text: l.Text, Kind: l.Kind, KindName: routes.KindName(l.Kind), Value: l.Value, Shown: l.Shown(), Builtin: l.Builtin, Off: l.Off,
+					Unlisted: !l.Builtin && l.User(sv).Unlisted()})
 			}
 			if sv.Source != "" {
 				d.Set = x.ruleSetView(sv)
@@ -502,7 +507,15 @@ func (x *bridge) routeOp(ctx context.Context, a callArgs) error {
 		return x.change(ctx, func(s *settings.Settings) { s.Routing.SetStrategy(a.ID, a.Mode, cur) })
 	case "setScope":
 		return x.change(ctx, func(s *settings.Settings) {
-			s.Routing.ChangePolicy(a.ID, func(q *routes.Policy) { q.Regions, q.Providers = a.Regions, a.Providers })
+			s.Routing.ChangePolicy(a.ID, func(q *routes.Policy) {
+				q.Regions, q.Providers = a.Regions, a.Providers
+				if a.Except != nil {
+					q.ExceptProviders = *a.Except
+				}
+				if len(q.Providers) == 0 {
+					q.ExceptProviders = false
+				}
+			})
 		})
 	case "setOrder":
 		return x.change(ctx, func(s *settings.Settings) {

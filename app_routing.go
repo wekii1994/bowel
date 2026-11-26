@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"maps"
 	"reflect"
 	"slices"
 	"time"
@@ -91,7 +92,7 @@ func (a *App) nodeLists(all []routes.Route) (scopes, orders map[string][]string)
 // inScope says whether node name, from provider, leaving from country, is
 // in the range of q's automatic choice.
 func inScope(q routes.Policy, name, provider, country string) bool {
-	return (len(q.Providers) == 0 || slices.Contains(q.Providers, provider)) &&
+	return q.FromProvider(provider) &&
 		(len(q.Regions) == 0 || slices.Contains(q.Regions, country)) &&
 		(len(q.Nodes) == 0 || slices.Contains(q.Nodes, name))
 }
@@ -155,6 +156,12 @@ func (a *App) followPolicies() error {
 		if err != nil {
 			return err
 		}
+		// The nodes' tests are in the providers' lists, as last read.
+		a.mu.Lock()
+		withNodes := maps.Clone(px)
+		addNodes(withNodes, a.nodeProxies)
+		a.mu.Unlock()
+		s := a.settings.Get()
 		var first error
 		for _, r := range all {
 			g, ok := px[routes.Group(r)]
@@ -162,6 +169,9 @@ func (a *App) followPolicies() error {
 				continue
 			}
 			want := wanted(r)
+			if n := a.downloadWant(r, s, withNodes); n != "" {
+				want = n
+			}
 			if g.Now == want || !slices.Contains(g.All, want) {
 				continue // a fixed node that is gone shows as broken
 			}
@@ -183,7 +193,7 @@ func coreView(p routes.Plan) routes.Plan {
 	p = p.Clone()
 	for i := range p.Groups {
 		g := &p.Groups[i]
-		g.Name, g.Policy.Fixed = "", ""
+		g.Name, g.Policy.Fixed, g.Policy.DownloadEvery = "", "", 0
 		if g.Policy.Mode == routes.ModeOrder || len(g.Policy.Order) > 0 {
 			g.Policy.Mode = routes.ModeOrder
 		} else {
@@ -243,7 +253,11 @@ func scopeWord(q routes.Policy, provName func(string) string) string {
 		add(r)
 	}
 	for _, id := range q.Providers {
-		add(provName(id))
+		if q.ExceptProviders {
+			add(fmt.Sprintf(i18n.T("不用 %s", "not %s"), provName(id)))
+		} else {
+			add(provName(id))
+		}
 	}
 	if n := len(q.Nodes); n > 0 {
 		add(fmt.Sprintf(i18n.T("%d 个节点", "%d nodes"), n))

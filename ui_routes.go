@@ -73,7 +73,7 @@ type ruleConflict struct {
 // routeKinds are the choices for a new rule's kind; "" guesses. An
 // application is among them where a rule for one can work.
 func routeKinds() []string {
-	out := []string{"", routes.KindSuffix, routes.KindDomain, routes.KindKeyword, routes.KindIP}
+	out := []string{"", routes.KindSuffix, routes.KindDomain, routes.KindKeyword, routes.KindIP, routes.KindGeo, routes.KindGeoIP}
 	if routes.AppRules {
 		out = append(out, routes.KindApp)
 	}
@@ -366,6 +366,12 @@ func (u *UI) matchLine(c *ui.Context, p *pal, rest []RouteView, other RouteView)
 // label with its highest count; a lower one has no more digits, but can be
 // wider, as 0 is than 1, so the digits are measured as the widest there is.
 func chip(c *ui.Context, p *pal, key, label, widest string, on bool, onClick func()) {
+	chipStruck(c, p, key, label, widest, on, false, onClick)
+}
+
+// chipStruck is a chip whose label, if struck, is crossed out: a choice
+// that leaves its thing out.
+func chipStruck(c *ui.Context, p *pal, key, label, widest string, on, struck bool, onClick func()) {
 	measure := func(s string) float32 {
 		w, _ := c.MeasureText(0, ui.Span{Text: s, Size: 12, Weight: 600})
 		return w
@@ -393,7 +399,12 @@ func chip(c *ui.Context, p *pal, key, label, widest string, on bool, onClick fun
 	if on {
 		col, w = p.ink, 600
 	}
-	b.OnClick(onClick).Children(func() { ui.Text(c, label).FontSize(12).FontWeight(w).TextColor(col).NoWrap() })
+	b.OnClick(onClick).Children(func() {
+		t := ui.Text(c, label).FontSize(12).FontWeight(w).TextColor(col).NoWrap()
+		if struck {
+			t.Strikethrough()
+		}
+	})
 }
 
 // toggled is list with v added, or taken out if it was in.
@@ -428,13 +439,13 @@ func (u *UI) scopeRows(c *ui.Context, p *pal, rid string, q routes.Policy) {
 			u.regionChips(c, p, rid, q, func(r string) (label, widest string) {
 				in := func(n NodeView) bool { return n.Where.Place != nil && n.Where.Place.Country == r }
 				return r + count(func(n NodeView) bool {
-					return in(n) && (len(q.Providers) == 0 || slices.Contains(q.Providers, n.Provider))
+					return in(n) && q.FromProvider(n.Provider)
 				}), r + count(in)
 			})
 		})
 		row("providers", i18n.T("来源", "From"), func() {
 			all := i18n.T("全部", "All")
-			chip(c, p, "all", all, all, len(q.Providers) == 0, func() { u.changePolicy(rid, func(q *routes.Policy) { q.Providers = nil }) })
+			chip(c, p, "all", all, all, len(q.Providers) == 0, func() { u.changePolicy(rid, func(q *routes.Policy) { q.Providers, q.ExceptProviders = nil, false }) })
 			for _, pv := range u.snap.Providers {
 				if !pv.Enabled {
 					continue
@@ -444,8 +455,25 @@ func (u *UI) scopeRows(c *ui.Context, p *pal, rid string, q routes.Policy) {
 				label := pv.Name + count(func(n NodeView) bool {
 					return in(n) && (len(q.Regions) == 0 || n.Where.Place != nil && slices.Contains(q.Regions, n.Where.Place.Country))
 				})
-				chip(c, p, id, label, pv.Name+count(in), slices.Contains(q.Providers, id), func() {
-					u.changePolicy(rid, func(q *routes.Policy) { q.Providers = toggled(q.Providers, id) })
+				picked := slices.Contains(q.Providers, id)
+				chipStruck(c, p, id, label, pv.Name+count(in), picked, picked && q.ExceptProviders, func() {
+					u.changePolicy(rid, func(q *routes.Policy) {
+						if q.Providers = toggled(q.Providers, id); len(q.Providers) == 0 {
+							q.ExceptProviders = false // 全部 again, which starts over at 只用
+						}
+					})
+				})
+			}
+			// What the picked ones are: the only ones used, or the ones
+			// left out (a provider added later is then used too).
+			if len(q.Providers) > 0 {
+				ui.Box(c).Width(10)
+				only, except := i18n.T("只用所选", "Only these"), i18n.T("排除所选", "All but these")
+				chip(c, p, "only", only, only, !q.ExceptProviders, func() {
+					u.changePolicy(rid, func(q *routes.Policy) { q.ExceptProviders = false })
+				})
+				chip(c, p, "except", except, except, q.ExceptProviders, func() {
+					u.changePolicy(rid, func(q *routes.Policy) { q.ExceptProviders = true })
 				})
 			}
 		})
@@ -476,6 +504,28 @@ func (u *UI) scopeRows(c *ui.Context, p *pal, rid string, q routes.Policy) {
 				ui.ButtonBase(c.Key("done")).Padding(3, 10).OnClick(func() { h.picking = "" }).Children(func() {
 					ui.Text(c, i18n.T("完成", "Done")).FontSize(12).FontWeight(600).TextColor(p.ink).Underline().NoWrap()
 				})
+			}
+		})
+		row("by", i18n.T("选法", "By"), func() {
+			delay, dl := i18n.T("延迟", "Delay"), i18n.T("下载速度", "Download speed")
+			chip(c, p, "delay", delay, delay, q.DownloadEvery == 0, func() {
+				u.changePolicy(rid, func(q *routes.Policy) { q.DownloadEvery = 0 })
+			})
+			chip(c, p, "download", dl, dl, q.DownloadEvery > 0, func() {
+				u.changePolicy(rid, func(q *routes.Policy) {
+					if q.DownloadEvery == 0 {
+						q.DownloadEvery = defaultDownloadEvery
+					}
+				})
+			})
+			if q.DownloadEvery > 0 {
+				ui.Box(c).Width(10)
+				for _, hrs := range routes.DownloadEveries {
+					label := fmt.Sprintf(i18n.T("每 %d 小时", "Every %d h"), hrs)
+					chip(c, p, fmt.Sprint("every", hrs), label, label, q.DownloadEvery == hrs, func() {
+						u.changePolicy(rid, func(q *routes.Policy) { q.DownloadEvery = hrs })
+					})
+				}
 			}
 		})
 	})
@@ -526,9 +576,14 @@ func (u *UI) policyWord(r RouteView) string {
 			return fmt.Sprintf(i18n.T("顺序备用 · 第 %d 位", "Backup order · No. %d"), i+1)
 		}
 	case routes.ModeAuto:
-		if w := scopeWord(q, u.providerName); w != "" {
-			return modeName(q.Mode) + " · " + w
+		name := modeName(q.Mode)
+		if q.ByDownload() {
+			name = i18n.T("下载最快", "Fastest download")
 		}
+		if w := scopeWord(q, u.providerName); w != "" {
+			return name + " · " + w
+		}
+		return name
 	}
 	return modeName(q.Mode)
 }
@@ -891,7 +946,12 @@ func (u *UI) routesGroup(c *ui.Context, p *pal, all []routes.Route, r routes.Rou
 // list as 代理's in-place expansion.
 func (u *UI) strategyCard(c *ui.Context, p *pal, v RouteView) {
 	st := &u.routes
-	ui.Column(c.Key("pol")).Radius(p.r(10)).Background(p.card).Border(1, p.hair).Margin(0, 0, 14, 0).ClipX().Children(func() {
+	pol := ui.Column(c.Key("pol")).Radius(p.r(10)).Background(p.card).Border(1, p.hair).Margin(0, 0, 14, 0).ClipX()
+	winW, _ := c.Size()
+	lastWinW := ui.Local(pol, "winW", func() float32 { return 0 })
+	winChanged := winW != *lastWinW
+	*lastWinW = winW
+	pol.Children(func() {
 		b := ui.ButtonBase(c.Key("head")).Row().Gap(10).Padding(10, 14).AlignItems(ui.Center)
 		b.Label(i18n.T("节点策略", "Node strategy")).OnClick(func() {
 			st.pol = !st.pol
@@ -912,8 +972,16 @@ func (u *UI) strategyCard(c *ui.Context, p *pal, v RouteView) {
 		})
 		if st.pol {
 			ui.Row(c).Padding(2, 14, 10, 14).Children(func() { u.stratSeg(c, p, v.ID) })
-			ui.Column(c.Key("picker")).Height(420).BorderWidth(1, 0, 0, 0).BorderColor(p.hair2).Children(func() {
-				u.nodePicker(c, p, v.ID, 660, nil)
+			picker := ui.Column(c.Key("picker")).Height(420).BorderWidth(1, 0, 0, 0).BorderColor(p.hair2)
+			w := picker.LayoutBounds().W
+			if w <= 0 {
+				w = max(0, pol.LayoutBounds().W-2) // pol's 1 DIP border on each side
+			}
+			if w <= 0 || winChanged {
+				c.Invalidate()
+			}
+			picker.Children(func() {
+				u.nodePicker(c, p, v.ID, w, nil)
 			})
 		}
 	})
@@ -1206,6 +1274,9 @@ func (u *UI) ruleLine(c *ui.Context, p *pal, all []routes.Route, s routes.Servic
 		}
 		ui.Text(c, l.Shown()).Font(actMono).FontSize(12.5).TextColor(col).SingleLine().Grow(1).Basis(0).MinWidth(0)
 		ui.Text(c, routes.KindName(l.Kind)).FontSize(11).TextColor(p.mute).NoWrap().Shrink(0)
+		if !l.Builtin && l.User(s).Unlisted() {
+			ui.Text(c, unlistedWord()).FontSize(11).TextColor(p.signal).NoWrap().Shrink(0)
+		}
 		if l.Builtin {
 			label := i18n.T("停用", "Turn off")
 			if l.Off {
@@ -1338,8 +1409,13 @@ func (u *UI) ruleInput(c *ui.Context, p *pal, all []routes.Route, s routes.Servi
 	}
 	ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(4, 0, 0, 0).Children(func() {
 		hint := i18n.T("*.netflix.com、openai.com 或 10.0.0.0/8", "*.netflix.com, openai.com or 10.0.0.0/8")
-		if st.kind == routes.KindApp {
+		switch st.kind {
+		case routes.KindApp:
 			hint = appExample()
+		case routes.KindGeo:
+			hint = i18n.T("youtube、netflix 或 google@cn", "youtube, netflix or google@cn")
+		case routes.KindGeoIP:
+			hint = i18n.T("CN、private 或 telegram", "CN, private or telegram")
 		}
 		in := ui.TextInput(c.Key("rule"), &st.rule).Bind(&st.ruleH).Label(i18n.T("新规则", "New rule")).
 			Placeholder(hint).
@@ -1375,8 +1451,10 @@ func (u *UI) ruleInput(c *ui.Context, p *pal, all []routes.Route, s routes.Servi
 		ui.Text(c, i18n.T("写应用或进程的名字，或粘贴日志里「进程」一栏的路径。它的所有连接都走这个路由组，排在其他规则之前；只管这台电脑上的应用。", "Type the app's or the program's name, or paste the path from the Log's Process row. Everything it connects to goes by this group, ahead of every other rule; only apps on this computer.")).FontSize(11.5).TextColor(p.faint)
 	case !typed && st.kind == routes.KindApp:
 		ui.Text(c, i18n.T("在下面点一个正在运行的应用，或写应用、进程的名字，也可以粘贴日志里「进程」一栏的路径。它的所有连接都走这个路由组，排在其他规则之前；只管这台电脑上的应用。", "Pick a running app below, or type the app's or the program's name, or paste the path from the Log's Process row. Everything it connects to goes by this group, ahead of every other rule; only apps on this computer.")).FontSize(11.5).TextColor(p.faint)
+	case !typed && (st.kind == routes.KindGeo || st.kind == routes.KindGeoIP):
+		ui.Text(c, geoKindNote(st.kind)).FontSize(11.5).TextColor(p.faint)
 	case !typed:
-		ui.Text(c, i18n.T("粘贴链接也可以，会自动提取域名。", "A pasted link works too: the domain is taken from it.")).FontSize(11.5).TextColor(p.faint)
+		ui.Text(c, i18n.T("粘贴链接也可以，会自动提取域名；mihomo 的规则写法也认，如 GEOSITE,youtube。", "A pasted link works too: the domain is taken from it. So does a rule as mihomo writes it, as GEOSITE,youtube.")).FontSize(11.5).TextColor(p.faint)
 	case err != nil:
 		ui.Text(c, err.Error()).FontSize(11.5).TextColor(p.signal)
 	default:
@@ -1403,6 +1481,20 @@ func (u *UI) ruleInput(c *ui.Context, p *pal, all []routes.Route, s routes.Servi
 }
 
 // appExample is a program's name as this system writes one.
+// unlistedWord says a rule's GeoSite or GeoIP list is not in the data now.
+func unlistedWord() string {
+	return i18n.T("数据里没有这个列表，未生效", "Not in the data: not in use")
+}
+
+// geoKindNote says what a rule of a GeoSite or GeoIP list is, before one
+// is typed.
+func geoKindNote(kind string) string {
+	if kind == routes.KindGeoIP {
+		return i18n.T("写 GeoIP 列表的名字，列表里的地址都走这个路由组。列表来自「设置 › GeoData」。", "Type a GeoIP list's name: the addresses in it go by this group. The lists come from Settings › GeoData.")
+	}
+	return i18n.T("写 GeoSite 列表的名字，列表里的域名都走这个路由组。列表来自「设置 › GeoData」。", "Type a GeoSite list's name: the domains in it go by this group. The lists come from Settings › GeoData.")
+}
+
 func appExample() string {
 	switch runtime.GOOS {
 	case "windows":

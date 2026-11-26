@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -124,6 +125,59 @@ func TestRoutesAddRule(t *testing.T) {
 	if !ok || sv.ID != "claude" {
 		t.Errorf("after moving: %+v %v", sv, ok)
 	}
+}
+
+// TestRoutesAddGeoRule: a rule pasted as mihomo writes it adds its GeoSite
+// list, which YouTube ships with, so it asks to move it first; and the
+// GeoSite kind says what to type.
+func TestRoutesAddGeoRule(t *testing.T) {
+	u := routesFixture()
+	u.selectGroup("ai")
+	u.routes.svc = "claude"
+	tt := ui.NewTester(u.view, 1060, 1500)
+	tt.Advance(time.Second)
+
+	typeInto(t, tt, "新规则", "GEOSITE,youtube,Proxy")
+	if !hasTextPart(tt, "添加后：youtube · GeoSite 域名库") {
+		t.Errorf("no preview: %q", tt.Texts())
+	}
+	shot(t, tt, "routes-geosite")
+	tt.Key(0, ui.KeyEnter)
+	tt.Advance(100 * time.Millisecond)
+	if !hasTextPart(tt, "一条规则只能属于一个服务") {
+		t.Fatalf("no conflict with YouTube: %q", tt.Texts())
+	}
+	if err := tt.Click("移过来"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Advance(100 * time.Millisecond)
+	s := u.shownSettings()
+	if sv, ok := routes.FindRule(routes.Build(s.Routing, s.Rules), "GEOSITE,youtube"); !ok || sv.ID != "claude" {
+		t.Errorf("after moving: %+v %v", sv, ok)
+	}
+
+	kind, ok := tt.AccessByRole(ui.RolePopUpButton, "匹配方式")
+	if !ok {
+		t.Fatalf("no kind picker: %q", tt.Texts())
+	}
+	tt.ClickAt(kind.Bounds.X+kind.Bounds.W/2, kind.Bounds.Y+kind.Bounds.H/2)
+	tt.Frame()
+	opts := map[string]ui.AccessInfo{}
+	for _, a := range tt.AccessAll() {
+		if a.Role == ui.RoleOption {
+			opts[a.Name] = a
+		}
+	}
+	geoip, ok := opts["GeoIP 地址库"]
+	if _, site := opts["GeoSite 域名库"]; !ok || !site {
+		t.Fatalf("kinds offered: %v", slices.Collect(maps.Keys(opts)))
+	}
+	tt.ClickAt(geoip.Bounds.X+geoip.Bounds.W/2, geoip.Bounds.Y+geoip.Bounds.H/2)
+	tt.Advance(100 * time.Millisecond)
+	if !hasTextPart(tt, "写 GeoIP 列表的名字") {
+		t.Errorf("no word on GeoIP lists: %q", tt.Texts())
+	}
+	shot(t, tt, "routes-geoip-kind")
 }
 
 // TestRoutesEditRule: a rule of the user's is edited in its row: its value
@@ -317,6 +371,84 @@ func TestStrategyPicker(t *testing.T) {
 	shot(t, tt, "routes-fixed")
 	if q := u.policy("ai"); q.Mode != routes.ModeFixed || len(q.Order) != 2 {
 		t.Errorf("after fixed: %+v", q)
+	}
+}
+
+// TestStrategyRegionStripWidth: the region strip inside the Routes tab's
+// Node strategy card uses the card's actual width across window sizes (not a
+// fixed width), leaving no dead gap before Search nodes when regions overflow.
+func TestStrategyRegionStripWidth(t *testing.T) {
+	checkBar := func(t *testing.T, tt *ui.Tester, label string) {
+		t.Helper()
+		all, ok := tt.AccessByRole(ui.RoleButton, "全部")
+		if !ok {
+			t.Fatalf("%s: no 全部 chip: %q", label, tt.Texts())
+		}
+		var strip ui.Rect
+		var foundStrip bool
+		cy := all.Bounds.Y + all.Bounds.H/2
+		for _, a := range tt.AccessAll() {
+			if a.Role == ui.RoleScroll && a.Bounds.Y <= cy && cy <= a.Bounds.Y+a.Bounds.H && (!foundStrip || a.Bounds.H < strip.H) {
+				strip = a.Bounds
+				foundStrip = true
+			}
+		}
+		if !foundStrip || strip.H >= 80 {
+			t.Fatalf("%s: no region scroll strip around y=%.1f (got %+v)", label, cy, strip)
+		}
+		btn, ok := tt.AccessByRole(ui.RoleButton, "全部测速")
+		if !ok {
+			t.Fatalf("%s: no 全部测速 button: %q", label, tt.Texts())
+		}
+		searchLeft := btn.Bounds.X - regionBarGap - regionSearchW
+		foundField := false
+		for _, a := range tt.AccessAll() {
+			if a.Role == ui.RoleTextField && a.Bounds.Y <= cy && cy <= a.Bounds.Y+a.Bounds.H && a.Bounds.X >= searchLeft && a.Bounds.X+a.Bounds.W <= btn.Bounds.X {
+				foundField = true
+				break
+			}
+		}
+		if !foundField {
+			t.Fatalf("%s: no search field between %.1f and %.1f", label, searchLeft, btn.Bounds.X)
+		}
+		gap := searchLeft - (strip.X + strip.W)
+		if gap < regionBarGap-1 || gap > 100 {
+			t.Errorf("%s: strip %+v to searchLeft %.1f leaves gap %.1f (want within [%.0f, 100])", label, strip, searchLeft, gap, float32(regionBarGap-1))
+		}
+	}
+
+	for _, mode := range []string{routes.ModeOrder, routes.ModeFixed} {
+		u, _ := scopeFixture()
+		u.routes.pol = false
+		u.changePolicy("ai", func(q *routes.Policy) { q.Mode = mode })
+		tt := ui.NewTester(u.view, 1060, 760)
+		tt.Advance(time.Second)
+		if err := tt.Click("节点策略"); err != nil {
+			t.Fatal(err)
+		}
+		tt.Advance(200 * time.Millisecond)
+		checkBar(t, tt, mode+"-open-1060")
+
+		tt.SetSize(1920, 760)
+		tt.Advance(200 * time.Millisecond)
+		checkBar(t, tt, mode+"-resize-1920")
+
+		tt.SetSize(960, 760)
+		tt.Advance(200 * time.Millisecond)
+		checkBar(t, tt, mode+"-resize-960")
+	}
+
+	// Starting already open on frame 1 converges to the real width and stays idle.
+	u, _ := scopeFixture()
+	u.changePolicy("ai", func(q *routes.Policy) { q.Mode = routes.ModeOrder })
+	var builds int
+	tt := ui.NewTester(func(c *ui.Context) { builds++; u.view(c) }, 1920, 760)
+	tt.Advance(200 * time.Millisecond)
+	checkBar(t, tt, "already-open-1920")
+	builds = 0
+	tt.Advance(time.Second)
+	if builds > 0 {
+		t.Errorf("already-open-1920: %d builds in an idle second, want 0", builds)
 	}
 }
 
@@ -962,5 +1094,106 @@ func TestPickNodes(t *testing.T) {
 	}
 	if w := u.policyWord(u.route("ai")); !strings.Contains(w, "3 个节点") {
 		t.Errorf("in words: %q", w)
+	}
+}
+
+// TestPickTestsWhatShows (#282): a click on a node of a ranged 自动最快
+// fixes the group on it, and the list then holds the nodes out of the range
+// too, which were never tested on the group's main target. The rows that
+// show are tested (keepMeasured), and that is all: here every one of them
+// fails, as nodes out of an AI group's range do on its API, and a failure
+// still stays above the untested rows instead of bringing one more into
+// view. It did bring one, and the list tested all its nodes, a screenful
+// at a time, never standing still.
+func TestPickTestsWhatShows(t *testing.T) {
+	u, _ := scopeFixture()
+	cc := u.snap.Nodes[0].Where.Place.Country
+	inRange := 0
+	for i := range u.snap.Nodes {
+		n := &u.snap.Nodes[i]
+		// Every route's main target has its entry, as the snapshot gives
+		// them; the fixture's copies of a node share one map.
+		n.Routes = map[string]NodeTest{"ai": {}}
+		if n.Where.Place != nil && n.Where.Place.Country == cc {
+			n.Routes["ai"] = NodeTest{Delay: 150 + 10*i, Tested: true}
+			inRange++
+		}
+	}
+	u.changePolicy("ai", func(q *routes.Policy) { q.Mode, q.Regions = routes.ModeAuto, []string{cc} })
+	tt := ui.NewTester(u.view, 1060, 900)
+	tt.Advance(time.Second)
+	tt.Frame()
+	if got := len(u.seen["window"].pings); got != inRange {
+		t.Fatalf("自动最快 drew %d rows, want the %d in its range", got, inRange)
+	}
+	pick := u.seen["window"].pings[0]
+	// What selectNode does to the plan, without the core it needs.
+	u.changePolicy("ai", func(q *routes.Policy) { q.Mode, q.Fixed = routes.ModeFixed, pick })
+	var rounds []int
+	for range len(u.snap.Nodes) {
+		tt.Frame()
+		tt.Frame() // a list's rows are in the frame after the one that built them
+		shown, n := u.seen["window"].pings, 0
+		for i := range u.snap.Nodes {
+			v := &u.snap.Nodes[i]
+			if slices.Contains(shown, v.Name) && !v.Routes["ai"].Tested {
+				v.Routes["ai"] = NodeTest{Tested: true} // a failure
+				n++
+			}
+		}
+		if n == 0 {
+			break
+		}
+		rounds = append(rounds, n)
+	}
+	if len(rounds) != 1 || rounds[0] == 0 {
+		t.Errorf("tests after the pick, frame by frame: %v; want the rows in view once (%d nodes, %d in range)", rounds, len(u.snap.Nodes), inRange)
+	}
+}
+
+// TestScopeExceptProviders (#272): picked sources can be the ones left out.
+// 排除所选 shows once one is picked, crosses the picked ones out and counts
+// the others' nodes; 全部 starts over at 只用.
+func TestScopeExceptProviders(t *testing.T) {
+	u, _ := scopeFixture()
+	tt := ui.NewTester(u.view, 1060, 760)
+	tt.Advance(time.Second)
+	if tt.HasText("排除所选") {
+		t.Error("排除所选 shows with no source picked")
+	}
+	pv := u.snap.Providers[slices.IndexFunc(u.snap.Providers, func(pv ProviderView) bool { return pv.Enabled })]
+	u.changePolicy("ai", func(q *routes.Policy) { q.Providers = []string{pv.ID} })
+	tt.Frame()
+	tt.Advance(50 * time.Millisecond)
+	if err := tt.Click("排除所选"); err != nil {
+		t.Fatalf("%v: %q", err, tt.Texts())
+	}
+	tt.Frame()
+	q := u.policy("ai")
+	if !q.ExceptProviders || !slices.Equal(q.Providers, []string{pv.ID}) {
+		t.Fatalf("after 排除所选: %+v", q)
+	}
+	for _, n := range u.snap.Nodes {
+		if q.FromProvider(n.Provider) == (n.Provider == pv.ID) {
+			t.Errorf("node %s of %s: in range %v", n.Name, n.Provider, q.FromProvider(n.Provider))
+		}
+	}
+	shot(t, tt, "routes-scope-except")
+	// The 全部 of 来源: the one in the row of 排除所选.
+	ex, _ := tt.Find("排除所选")
+	var all []ui.Rect
+	for _, a := range tt.AccessAll() {
+		if a.Role == ui.RoleButton && a.Name == "全部" {
+			all = append(all, a.Bounds)
+		}
+	}
+	at := slices.IndexFunc(all, func(r ui.Rect) bool { return r.Y <= ex.Y+ex.H/2 && ex.Y+ex.H/2 <= r.Y+r.H })
+	if at < 0 {
+		t.Fatalf("no 全部 in the row of 排除所选: %v", all)
+	}
+	tt.ClickAt(all[at].X+all[at].W/2, all[at].Y+all[at].H/2)
+	tt.Frame()
+	if q := u.policy("ai"); q.ExceptProviders || len(q.Providers) > 0 {
+		t.Errorf("after 全部: %+v", q)
 	}
 }
