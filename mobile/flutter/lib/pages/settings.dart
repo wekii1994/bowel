@@ -96,11 +96,12 @@ class _SettingsHomeState extends State<_SettingsHome> {
     final names = [tr('青柠', 'Lime'), tr('靛蓝', 'Indigo'), tr('珊瑚', 'Coral'), tr('青绿', 'Teal'), tr('桃红', 'Pink'), tr('墨色', 'Ink')];
     bool isOn(String hex) => app.accent.isEmpty ? accentColor(hex, true) == own || _hexOf(hex) == own : app.accent.toLowerCase() == hex.toLowerCase();
     final preset = accentPresets.any((p) => isOn(p.$1));
-    Widget dot(String label, Color fill, bool on, VoidCallback tap, {Widget? child}) => Tap(
+    final dotCount = accentPresets.length + 1;
+    Widget dot(double dotW, String label, Color fill, bool on, VoidCallback tap, {Widget? child}) => Tap(
           onTap: tap,
           label: label,
           child: SizedBox(
-            width: 44,
+            width: dotW,
             height: 44,
             child: Center(
               child: Container(
@@ -118,20 +119,23 @@ class _SettingsHomeState extends State<_SettingsHome> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(tr('主题色', 'Theme color'), style: l.text(15, lh: 21)),
         const SizedBox(height: 2),
-        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          for (final (i, p) in accentPresets.indexed) dot(names[i], p.$1 == 'ink' ? l.ink : accentColor(p.$1, l.isDark)!, isOn(p.$1), () => app.setAccent(p.$1)),
-          dot(tr('自定义', 'Custom'), preset ? l.paper2 : (accentColor(app.accent, l.isDark) ?? l.paper2), !preset, () {
-            inputSheet(app, tr('主题色', 'Theme color'), (v) {
-              var hex = v.trim().toUpperCase();
-              if (hex.isNotEmpty && !hex.startsWith('#')) hex = '#$hex';
-              if (!validAccent(hex)) {
-                app.say(tr('主题色要写成 #RRGGBB', 'The theme color must be #RRGGBB'));
-                return;
-              }
-              app.setAccent(hex);
-            }, hint: '#RRGGBB', initial: app.accent == 'ink' ? '' : app.accent);
-          }, child: preset ? Text('#', style: l.text(13, weight: 700, color: l.ink2, lh: 16)) : null),
-        ]),
+        LayoutBuilder(builder: (context, c) {
+          final dotW = c.maxWidth / dotCount < 44.0 ? c.maxWidth / dotCount : 44.0;
+          return Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            for (final (i, p) in accentPresets.indexed) dot(dotW, names[i], p.$1 == 'ink' ? l.ink : accentColor(p.$1, l.isDark)!, isOn(p.$1), () => app.setAccent(p.$1)),
+            dot(dotW, tr('自定义', 'Custom'), preset ? l.paper2 : (accentColor(app.accent, l.isDark) ?? l.paper2), !preset, () {
+              inputSheet(app, tr('主题色', 'Theme color'), (v) {
+                var hex = v.trim().toUpperCase();
+                if (hex.isNotEmpty && !hex.startsWith('#')) hex = '#$hex';
+                if (!validAccent(hex)) {
+                  app.say(tr('主题色要写成 #RRGGBB', 'The theme color must be #RRGGBB'));
+                  return;
+                }
+                app.setAccent(hex);
+              }, hint: '#RRGGBB', initial: app.accent == 'ink' ? '' : app.accent);
+            }, child: preset ? Text('#', style: l.text(13, weight: 700, color: l.ink2, lh: 16)) : null),
+          ]);
+        }),
       ]),
     );
   }
